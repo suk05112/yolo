@@ -145,8 +145,8 @@ class LoadImages:  # for inference
             self.new_video(videos[0])  # new video
         else:
             self.cap = None
-        assert self.nf > 0, f'No images or videos found in {p}. ' \
-                            f'Supported formats are:\nimages: {img_formats}\nvideos: {vid_formats}'
+#         assert self.nf > 0, f'No images or videos found in {p}. ' \
+#                             f'Supported formats are:\nimages: {img_formats}\nvideos: {vid_formats}'
 
     def __iter__(self):
         self.count = 0
@@ -263,6 +263,8 @@ class LoadStreams:  # multiple IP or RTSP cameras
         self.img_size = img_size
         self.stride = stride
 
+        global cap
+
         if os.path.isfile(sources):
             with open(sources, 'r') as f:
                 sources = [x.strip() for x in f.read().strip().splitlines() if len(x.strip())]
@@ -326,7 +328,7 @@ class LoadStreams:  # multiple IP or RTSP cameras
         img = img[:, :, :, ::-1].transpose(0, 3, 1, 2)  # BGR to RGB, to bsx3x416x416
         img = np.ascontiguousarray(img)
 
-        return self.sources, img, img0, None
+        return self.sources, img, img0, cap
 
     def __len__(self):
         return 0  # 1E12 frames = 32 streams at 30 FPS for 30 years

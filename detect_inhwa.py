@@ -1,10 +1,6 @@
 import argparse
 import time
 from pathlib import Path
-from IPython.display import Image
-import os
-import math
-
 
 import cv2
 import torch
@@ -20,16 +16,20 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized
 import time
 import logging
 import threading
-import xml.etree.ElementTree as ET
-from xml.etree.ElementTree import Element, dump, ElementTree
+
+def renew_fps(cap):
+    
+    time.sleep(1)
+    renewfps = cap.get(cv2.CAP_PROP_FPS)
+    def get_value(renewfps):
+        return rf
+    return renewfps
 
 def detect(save_img=False):
     global renewfps
-    global pt_duration
 
     logging.basicConfig(filename='detect.log', level=logging.INFO)
     source, weights, view_img, save_txt, imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
-    
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
         ('rtsp://', 'rtmp://', 'http://'))
 
@@ -42,12 +42,12 @@ def detect(save_img=False):
     device = select_device(opt.device)
     half = device.type != 'cpu'  # half precision only supported on CUDA
 
-    # Load model
+    # Load model 
     model_start = time.time()*1000
     model = attempt_load(weights, map_location=device)  
     model_end = time.time()*1000
     model_duration = round(model_end - model_start, 3)
-    
+
     # AwesomeTech-duration of loading model
     logging.info(" Model_Loading: "+ str(model_duration))
     stride = int(model.stride.max())  # model stride
@@ -71,15 +71,11 @@ def detect(save_img=False):
     else:
         save_img = True
         dataset = LoadImages(source, img_size=imgsz, stride=stride)
-
-            
     dataload_end = time.time()*1000
     print(dataload_start, dataload_end)
     dataload_duration = round(dataload_end - dataload_start, 3)
-    
     # AwesomeTech-duration of loading data
     logging.info(" Data_Loading: "+str(dataload_duration))
-
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
@@ -87,20 +83,17 @@ def detect(save_img=False):
     # Run inference
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
-        
     t0 = time.time()
-    prevTime = 0    
-    count = 0
-    front_x = 0
-    front_y = 0
-    front_cls = -1
-    
+    prevTime = 0
+
     for path, img, im0s, vid_cap in dataset:
-        print("path = ", path)
-        print("dataset = ", dataset)
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        
+        t = threading.Thread(target=renew_fps, args=vid_cap)
+        #t.start()
+        #print("fps= : ", fps)
 
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
@@ -117,62 +110,37 @@ def detect(save_img=False):
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
-    # Process detections
+        # Process detections
         for i, det in enumerate(pred):  # detections per image
+            
 
             tl = 3 or round(0.002 * (im0.shape[0] + im0.shape[1]) / 2) + 1  # line/font thickness
             tf = max(tl - 1, 1)  # font thickness
+            #fps = int(vid_cap.get(cv2.CAP_PROP_FPS))
+            #fps = vid_cap.get(cv2.CAP_PROP_FPS) % 100
+            
 
             if webcam:  # batch_size >= 1
                 p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
-                cv2.putText(im0, (0, 50), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
-            else:
+                ################  count fps  ####################
                 curTime = time.time()
                 sec = curTime - prevTime
                 prevTime = curTime
                 fps_ = 1/(sec)
                 fps_str = "FPS : %0.1f" % fps_
-                print("custom_fps:", fps_str)
+                #################################################
+                rf = renew_fps(vid_cap)
+                                
+                cv2.putText(im0, "fps: "+str(rf), (0, 50), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+            else:
                 p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
+
             p = Path(p)  # to Path
-
-            Image(os.path.join('/home/isl/.jupyter/custom/dataset/export/images/', os.path.basename(Path(path).name)))
-            save_path = str(save_dir / Path(path).name)  # img.jpg
-
+            save_path = str(save_dir / p.name)  # img.jpg
             txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
             s += '%gx%g ' % img.shape[2:]  # print string
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
-
-#             ann_path = '/home/isl/.jupyter/custom/dataset/export/dev_ann/'
-#             dev_ann = ann_path + p.name[:-4] + '.xml'
-#             doc = ET.parse(dev_ann)
-#             root = doc.getroot()
-#             bndbox = root.find("object").find("bndbox")
-
-
-#             origin_labels = open('/home/isl/.jupyter/custom/dataset/export/dev_labels/'+ p.name[:-4] + '.txt', 'r') #정답 라벨값
-#             origin = origin_labels.readline().split(' ')
-
-#             x=(float(origin[1]))
-#             y=(float(origin[2]))
-#             width=(float(origin[3]))
-#             height=(float(origin[4]))
             
-            h, w, bs = im0.shape
-            
-#             xmin = str(int((2*x*w-w*width)/2))
-#             ymin = str(int((2*y*h-h*height)/2))
-#             xmax = str(int((2*x*w+w*width)/2))
-#             ymax = str(int((2*y*h+h*height)/2))
-
-#             with open('/home/isl/.jupyter/custom/dataset/origin.txt', 'a') as f:
-#                 f.write(origin[0] + " " + str(save_dir / p.name) + " " + xmin + ' ' + ymin + ' ' + xmax + ' ' + ymax + '\n')
-             
-                
-#                         bndbox[0].text + " " + bndbox[1].text + " " + bndbox[2].text  + " " + bndbox[3].text+'\n'
-
-#             f = open('/home/isl/.jupyter/custom/dataset/dettext/' + 'detect.txt', 'w')
-
             if len(det):
                 # Rescale boxes from img_size to im0 size
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
@@ -191,76 +159,24 @@ def detect(save_img=False):
                             f.write(('%g ' * len(line)).rstrip() % line + '\n')
 
                     if save_img or view_img:  # Add bbox to image
-                        label = f'{names[int(cls)]} {conf:.2f}'                          
+                        label = f'{names[int(cls)]} {conf:.2f}'
                         plot_one_box(xyxy, im0, label=label, color=colors[int(cls)], line_thickness=3)
-
-                    a=(int(xyxy[0])) #x1
-                    b=(int(xyxy[1])) #y1
-                    c=(int(xyxy[2])) #x2
-                    d=(int(xyxy[3])) #y2
-
-                    with open('/home/isl/.jupyter/custom/dataset/dettext/' + 'detect.txt', 'a') as f:
-
-#                         a=str((int(xyxy[0]))) #x1
-#                         b=str((int(xyxy[1]))) #y1
-#                         c=str((int(xyxy[2]))) #x2
-#                         d=str((int(xyxy[3]))) #y2
-                       
-#                         f.write("\n" + str(int(cls)) + " " + str(save_dir / p.name) + " " + a + " " + b + " " + c  + " " + d)
-                        f.write(str(int(cls)) + " " + str(save_dir / p.name) + " " + str(int(a)) + " " + str(int(b)) + " " + str(int(c))  + " " + str(int(d))+"\n")
-
-                        count += 1
-                        print("img size = ", h, w)
-            
-                        
-                        mid_x = w/2
-                        mid_y = h/2
-                        
-#                         convert_point_x = int(((a+c)/2) - mid_x)
-#                         convert_point_y = int(mid_y - ((b+d)/2))
-
-                        convert_point_x = int(((a+c)/2))
-                        convert_point_y = int(((b+d)/2))
-                        cv2.line(im0,(convert_point_x, convert_point_y),(convert_point_x, convert_point_y), (0, 0, 255), 5)
-            
-                        print("my label =", float(label.split(' ')[1]))
-
-                        if float(label.split(' ')[1])>0.7:
-#                             if (abs(front_x-mid_x)>10 or abs(front_y-mid_y)>10):
-                            with open('/home/isl/.jupyter/custom/dataset/' + 'mid.txt', 'a') as f:
-                                f.write(str(int(cls)) + " " + str(p.name) + " " + str(convert_point_x) + ' ' + str(convert_point_y) + ' ' + '\n')
-#                                     front_x = mid_x
-#                                     front_y = mid_y
-#                                     front_cls = cls
-                        
-                        
-
             else:
                 cv2.putText(im0, "0", (0, 100), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
 
-                with open('/home/isl/.jupyter/custom/dataset/dettext/' + 'detect.txt', 'a') as f:
-                    f.write('0' +" "+ str(save_dir / p.name) + '\n')
-                    
-#                 with open('/home/isl/.jupyter/custom/dataset/' + 'mid.txt', 'a') as f:
-#                             f.write(str(0) + ' ' + str(0))
-
-#             with open('/home/isl/.jupyter/custom/dataset/' + 'mid.txt', 'a') as f:
-#                             f.write('\n')
 
             # Print time (inference + NMS)
             print(f'{s}Done. ({t2 - t1:.3f}s)')
             dectect_duration = round((t2 - t1)*1000, 3) 
-
+             
             # AwesomeTech-duration of Inference
             logging.info(" Inference: "+str(dectect_duration)+" "+save_path)
-
             # Stream results
             if view_img:
                 cv2.imshow(str(p), im0)
                 cv2.waitKey(1)  # 1 millisecond
 
-            path = '/home/isl/.jupyter/custom/yolov5/runs/detect/' + str(opt.weights) 
-
+            
             # Save results (image with detections)
             if save_img:
                 if dataset.mode == 'image':
@@ -282,10 +198,8 @@ def detect(save_img=False):
     if save_txt or save_img:
         s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
         print(f"Results saved to {save_dir}{s}")
-        print("result save")
 
     print(f'Done. ({time.time() - t0:.3f}s)')
-
 
 if __name__ == '__main__':
 
@@ -306,7 +220,6 @@ if __name__ == '__main__':
     parser.add_argument('--project', default='runs/detect', help='save results to project/name')
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    
     opt = parser.parse_args()
     print(opt)
     check_requirements()
@@ -320,4 +233,3 @@ if __name__ == '__main__':
                 strip_optimizer(opt.weights)
         else:
             detect()
-

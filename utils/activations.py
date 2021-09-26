@@ -40,6 +40,7 @@ class MemoryEfficientSwish(nn.Module):
 class Mish(nn.Module):
     @staticmethod
     def forward(x):
+        print("in mish def")
         return x * F.softplus(x).tanh()
 
 

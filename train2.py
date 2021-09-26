@@ -34,10 +34,7 @@ from utils.loss import ComputeLoss
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 
-
-
 logger = logging.getLogger(__name__)
-
 
 
 def train(hyp, opt, device, tb_writer=None, wandb=None):
@@ -50,8 +47,6 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     wdir.mkdir(parents=True, exist_ok=True)  # make dir
     last = wdir / 'last.pt'
     best = wdir / 'best.pt'
-    epoch_t = wdir / 'epoch.pt'
-
     results_file = save_dir / 'results.txt'
 
     # Save run settings
@@ -70,7 +65,6 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
     test_path = data_dict['val']
-    print("nc=", int(data_dict['nc']))
     nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
     names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
@@ -81,28 +75,16 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        if hyp.get('anchors'):
-            ckpt['model'].yaml['anchors'] = round(hyp['anchors'])  # force autoanchor
-#         model_start = time.time()*1000
-#         print("@@@",model_start)
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc).to(device)  # create
-        exclude = ['anchor'] if opt.cfg or hyp.get('anchors') else []  # exclude keys
+#         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=data_dict.get('anchors')).to(device)  # create
+
+        exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
-#         model_end = time.time()*1000
-#         print("@@@",model_end)
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
-        model_start = time.time()*1000
-        print("model_start",model_start)
-        model = Model(opt.cfg, ch=3, nc=nc).to(device)  # create
-        model_end = time.time()*1000
-        model_duration = model_end-model_start
-        
-        #AwesomeTech-duration of loading model
-        print("model_duration",model_duration)
-
+        model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
 
     # Freeze
     freeze = []  # parameter names to freeze (full or partial)
@@ -169,8 +151,8 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
         # EMA
         if ema and ckpt.get('ema'):
-            ema.ema.load_state_dict(ckpt['ema'][0].float().state_dict())
-            ema.updates = ckpt['ema'][1]
+            ema.ema.load_state_dict(ckpt['ema'].float().state_dict())
+            ema.updates = ckpt['updates']
 
         # Results
         if ckpt.get('training_results') is not None:
@@ -189,11 +171,8 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
 
     # Image sizes
     gs = max(int(model.stride.max()), 32)  # grid size (max stride)
-    print(gs)
     nl = model.model[-1].nl  # number of detection layers (used for scaling hyp['obj'])
-    print(nl)
     imgsz, imgsz_test = [check_img_size(x, gs) for x in opt.img_size]  # verify imgsz are gs-multiples
-    print(imgsz, imgsz_test)
 
     # DP mode
     if cuda and rank == -1 and torch.cuda.device_count() > 1:
@@ -204,23 +183,11 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(device)
         logger.info('Using SyncBatchNorm()')
 
-    # DDP mode
-    if cuda and rank != -1:
-        model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
-
     # Trainloader
-    dataload_start = time.time()*1000
-    print("dataload_start",dataload_start)
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
-    dataload_end = time.time()*1000
-    dataload_duration = dataload_end - dataload_start
-    
-    #AwesomeTech-duration of loading data
-    print("dataload_duration",dataload_duration)
-    
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -238,13 +205,18 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
             # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
             # model._initialize_biases(cf.to(device))
             if plots:
-                plot_labels(labels, save_dir, loggers)
+                plot_labels(labels, names, save_dir, loggers)
                 if tb_writer:
                     tb_writer.add_histogram('classes', c, 0)
 
             # Anchors
             if not opt.noautoanchor:
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
+            model.half().float()  # pre-reduce anchor precision
+
+    # DDP mode
+    if cuda and rank != -1:
+        model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
 
     # Model parameters
     hyp['box'] *= 3. / nl  # scale to layers
@@ -259,7 +231,6 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
     # Start training
     t0 = time.time()
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
-    print("nw = ", nw)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
@@ -272,7 +243,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                 f'Starting training for {epochs} epochs...')
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
-      
+
         # Update image weights (optional)
         if opt.image_weights:
             # Generate indices
@@ -295,7 +266,7 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
         pbar = enumerate(dataloader)
-        logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'targets', 'img_size'))
+        logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'labels', 'img_size'))
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
@@ -326,7 +297,6 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                print("loss = ", loss, loss_items)
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -362,8 +332,6 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
                     wandb.log({"Mosaics": [wandb.Image(str(x), caption=x.name) for x in save_dir.glob('train*.jpg')
                                            if x.exists()]}, commit=False)
 
-
-                
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
 
@@ -411,29 +379,14 @@ def train(hyp, opt, device, tb_writer=None, wandb=None):
             if fi > best_fitness:
                 best_fitness = fi
 
-#             ##############################################################################
-#             if epoch%10 == 0:
-#                 ckpt = {'epoch': epoch,
-#                         'best_fitness': best_fitness,
-#                         'training_results': results_file.read_text(),
-#                         'model': ema.ema if final_epoch else deepcopy(
-#                             model.module if is_parallel(model) else model).half(),
-#                         'ema': (deepcopy(ema.ema).half(), ema.updates),
-#                         'optimizer': optimizer.state_dict(),
-#                         'wandb_id': wandb_run.id if wandb else None}
-
-
-#                 torch.save(ckpt, wdir / 'epoch' + epoch + '.pt')
-            ##############################################################################
-
             # Save model
             if (not opt.nosave) or (final_epoch and not opt.evolve):  # if save
                 ckpt = {'epoch': epoch,
                         'best_fitness': best_fitness,
                         'training_results': results_file.read_text(),
-                        'model': ema.ema if final_epoch else deepcopy(
-                            model.module if is_parallel(model) else model).half(),
-                        'ema': (deepcopy(ema.ema).half(), ema.updates),
+                        'model': deepcopy(model.module if is_parallel(model) else model).half(),
+                        'ema': deepcopy(ema.ema).half(),
+                        'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
                         'wandb_id': wandb_run.id if wandb else None}
 
@@ -542,7 +495,7 @@ if __name__ == '__main__':
         opt.cfg, opt.weights, opt.resume, opt.batch_size, opt.global_rank, opt.local_rank = '', ckpt, True, opt.total_batch_size, *apriori  # reinstate
         logger.info('Resuming training from %s' % ckpt)
     else:
-        opt.hyp = opt.hyp or ('hyp.finetune.yaml' if opt.weights else 'hyp.scratch.yaml')
+        # opt.hyp = opt.hyp or ('hyp.finetune.yaml' if opt.weights else 'hyp.scratch.yaml')
         opt.data, opt.cfg, opt.hyp = check_file(opt.data), check_file(opt.cfg), check_file(opt.hyp)  # check files
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
